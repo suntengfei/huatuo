@@ -21,7 +21,6 @@ struct dirty_page_info {
 	u64 inode;
 	u32 pid;
 	u8 state;
-	char comm[COMPAT_TASK_COMM_LEN];
 };
 
 struct page_cache_stats {
@@ -61,7 +60,6 @@ struct page_alert_event {
 	u64 dirty_age_ns;
 	u32 pid;
 	u8 event_type;
-	char comm[COMPAT_TASK_COMM_LEN];
 };
 
 static __always_inline void update_dirty_stats(u64 dirty_age_ns)
@@ -105,7 +103,6 @@ int BPF_KPROBE(trace_mark_buffer_dirty, struct buffer_head *bh)
 	info.mark_dirty_ts = ts;
 	info.pid = bpf_get_current_pid_tgid() >> 32;
 	info.state = 0;
-	bpf_get_current_comm(info.comm, sizeof(info.comm));
 
 	bpf_map_update_elem(&dirty_page_map, &key, &info, COMPAT_BPF_ANY);
 
@@ -116,36 +113,6 @@ int BPF_KPROBE(trace_mark_buffer_dirty, struct buffer_head *bh)
 		stats->dirty_pages++;
 		if (stats->clean_pages > 0)
 			stats->clean_pages--;
-	}
-
-	return 0;
-}
-
-SEC("kprobe/writepage")
-int BPF_KPROBE(trace_writepage, struct page *page)
-{
-	struct page_key key = {};
-	struct dirty_page_info *info;
-	u64 ts = bpf_ktime_get_ns();
-	u64 page_addr = (u64)page;
-
-	key.page_addr = page_addr;
-
-	info = bpf_map_lookup_elem(&dirty_page_map, &key);
-	if (info) {
-		info->writeback_ts = ts;
-		info->state = 1;
-
-		u64 dirty_age = ts - info->mark_dirty_ts;
-		update_dirty_stats(dirty_age);
-
-		u32 stats_key = 0;
-		struct page_cache_stats *stats;
-		stats = bpf_map_lookup_elem(&page_stats_map, &stats_key);
-		if (stats) {
-			stats->dirty_pages--;
-			stats->writeback_pages++;
-		}
 	}
 
 	return 0;
@@ -179,20 +146,6 @@ int BPF_KPROBE(trace_invalidate_inode_page, struct page *page)
 	stats = bpf_map_lookup_elem(&page_stats_map, &key);
 	if (stats)
 		stats->invalidate_count++;
-
-	return 0;
-}
-
-SEC("kretprobe/writepage")
-int BPF_KRETPROBE(trace_writepage_ret, int ret)
-{
-	if (ret != 0) {
-		u32 key = 0;
-		struct page_cache_stats *stats;
-		stats = bpf_map_lookup_elem(&page_stats_map, &key);
-		if (stats)
-			stats->writeback_fail++;
-	}
 
 	return 0;
 }

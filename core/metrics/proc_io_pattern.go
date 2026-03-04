@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"os"
 	"sync/atomic"
 
 	"huatuo-bamai/internal/bpf"
@@ -57,13 +58,19 @@ type procIOStats struct {
 	FsyncLatencyMax   uint64
 	PartialWriteCount uint64
 	FsyncRetryCount   uint64
-	LastOffset        uint64
-	OffsetJumps       uint64
-	Comm              [16]byte
 }
 
 type procIOKey struct {
 	Pid uint32
+}
+
+func getProcessComm(pid uint32) string {
+	commPath := fmt.Sprintf("/proc/%d/comm", pid)
+	data, err := os.ReadFile(commPath)
+	if err != nil {
+		return "unknown"
+	}
+	return string(bytes.TrimSpace(data))
 }
 
 func (c *procIOPattern) Update() ([]*metric.Data, error) {
@@ -98,7 +105,7 @@ func (c *procIOPattern) Update() ([]*metric.Data, error) {
 			continue
 		}
 
-		comm := string(bytes.TrimRight(stats.Comm[:], "\x00"))
+		comm := getProcessComm(key.Pid)
 		labels := map[string]string{
 			"pid":  fmt.Sprintf("%d", key.Pid),
 			"comm": comm,

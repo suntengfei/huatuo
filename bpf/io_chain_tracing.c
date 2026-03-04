@@ -23,7 +23,6 @@ struct io_chain_entry {
 	u32 dev;
 	u8 stage;
 	u8 completed;
-	char comm[COMPAT_TASK_COMM_LEN];
 };
 
 struct io_chain_stats {
@@ -62,7 +61,6 @@ struct alert_event {
 	u64 request_id;
 	u64 latency_ns;
 	u8 event_type;
-	char comm[COMPAT_TASK_COMM_LEN];
 };
 
 static __always_inline u64 generate_request_id(u32 pid, u64 ts)
@@ -104,7 +102,6 @@ int trace_sys_enter_write(struct trace_event_raw_sys_enter *ctx)
 	entry.stage = 0;
 	entry.completed = 0;
 
-	bpf_get_current_comm(entry.comm, sizeof(entry.comm));
 	bpf_map_update_elem(&io_chain_map, &key, &entry, COMPAT_BPF_ANY);
 
 	return 0;
