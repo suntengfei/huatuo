@@ -35,7 +35,7 @@ func init() {
 func newProcIOPattern() (*tracing.EventTracingAttr, error) {
 	return &tracing.EventTracingAttr{
 		TracingData: &procIOPattern{},
-		Interval:    10,
+		Internal:    10,
 		Flag:        tracing.FlagTracing | tracing.FlagMetric,
 	}, nil
 }
@@ -48,18 +48,18 @@ type procIOPattern struct {
 }
 
 type procIOStats struct {
-	WriteBytes       uint64
-	ReadBytes        uint64
-	WriteCount       uint64
-	ReadCount        uint64
-	FsyncCount       uint64
-	FsyncLatencySum  uint64
-	FsyncLatencyMax  uint64
+	WriteBytes        uint64
+	ReadBytes         uint64
+	WriteCount        uint64
+	ReadCount         uint64
+	FsyncCount        uint64
+	FsyncLatencySum   uint64
+	FsyncLatencyMax   uint64
 	PartialWriteCount uint64
-	FsyncRetryCount  uint64
-	LastOffset       uint64
-	OffsetJumps      uint64
-	Comm             [16]byte
+	FsyncRetryCount   uint64
+	LastOffset        uint64
+	OffsetJumps       uint64
+	Comm              [16]byte
 }
 
 type procIOKey struct {

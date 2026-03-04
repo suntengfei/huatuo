@@ -35,7 +35,7 @@ func init() {
 func newIOChainIntegrity() (*tracing.EventTracingAttr, error) {
 	return &tracing.EventTracingAttr{
 		TracingData: &ioChainIntegrity{},
-		Interval:    10,
+		Internal:    10,
 		Flag:        tracing.FlagTracing | tracing.FlagMetric,
 	}, nil
 }

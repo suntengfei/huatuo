@@ -35,7 +35,7 @@ func init() {
 func newPageCacheHealth() (*tracing.EventTracingAttr, error) {
 	return &tracing.EventTracingAttr{
 		TracingData: &pageCacheHealth{},
-		Interval:    10,
+		Internal:    10,
 		Flag:        tracing.FlagTracing | tracing.FlagMetric,
 	}, nil
 }
