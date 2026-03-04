@@ -75,8 +75,13 @@ static __always_inline int is_target_process(const char *comm)
 	for (int i = 0; i < MAX_TARGET_PROCS && i < target_proc_count; i++) {
 		if (target_procs[i][0] == '\0')
 			break;
-		if (__builtin_memcmp(comm, target_procs[i], MAX_COMM_LEN) == 0)
-			return 1;
+		#pragma unroll
+		for (int j = 0; j < MAX_COMM_LEN; j++) {
+			if (comm[j] != target_procs[i][j])
+				goto next_proc;
+		}
+		return 1;
+next_proc:;
 	}
 
 	return 0;
