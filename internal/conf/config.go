@@ -38,6 +38,12 @@ type CommonConf struct {
 	// APIServer addr
 	APIServer struct {
 		TCPAddr string `default:":19704"`
+		
+		Auth struct {
+			Enable   bool   `default:"false"`
+			Username string
+			Password string
+		}		
 	}
 
 	// HuaTuo config

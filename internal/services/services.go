@@ -23,6 +23,7 @@ import (
 	"huatuo-bamai/internal/log"
 	"huatuo-bamai/internal/services/config"
 	"huatuo-bamai/pkg/tracing"
+	"huatuo-bamai/internal/services/middleware"
 
 	"github.com/gin-contrib/pprof"
 	"github.com/gin-gonic/gin"
@@ -76,7 +77,7 @@ func NewServer() *Server {
 	// middleware: log, recovery, pprof
 	pprof.Register(instance.server)
 	limiter := NewRateLimiter(200, 200)
-	instance.server.Use(gin.Logger(), gin.Recovery(), limiter.Limit())
+	instance.server.Use(gin.Logger(), gin.Recovery(), limiter.Limit(), middleware.BasicAuth())
 	return instance
 }
 
