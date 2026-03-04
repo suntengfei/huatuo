@@ -21,6 +21,7 @@ struct dirty_page_info {
 	u64 inode;
 	u32 pid;
 	u8 state;
+	char comm[COMPAT_TASK_COMM_LEN];
 };
 
 struct page_cache_stats {
@@ -77,8 +78,8 @@ static __always_inline void update_dirty_stats(u64 dirty_age_ns)
 		stats->dirty_age_max = dirty_age_ns;
 }
 
-SEC("fentry/add_to_page_cache_lru")
-int BPF_PROG(trace_add_to_page_cache_lru, struct page *page)
+SEC("kprobe/add_to_page_cache_lru")
+int BPF_KPROBE(trace_add_to_page_cache_lru, struct page *page)
 {
 	u32 key = 0;
 	struct page_cache_stats *stats;
@@ -90,8 +91,8 @@ int BPF_PROG(trace_add_to_page_cache_lru, struct page *page)
 	return 0;
 }
 
-SEC("fentry/mark_buffer_dirty")
-int BPF_PROG(trace_mark_buffer_dirty, struct buffer_head *bh)
+SEC("kprobe/mark_buffer_dirty")
+int BPF_KPROBE(trace_mark_buffer_dirty, struct buffer_head *bh)
 {
 	struct page_key key = {};
 	struct dirty_page_info info = {};
@@ -120,8 +121,8 @@ int BPF_PROG(trace_mark_buffer_dirty, struct buffer_head *bh)
 	return 0;
 }
 
-SEC("fentry/writepage")
-int BPF_PROG(trace_writepage, struct page *page)
+SEC("kprobe/writepage")
+int BPF_KPROBE(trace_writepage, struct page *page)
 {
 	struct page_key key = {};
 	struct dirty_page_info *info;
@@ -150,14 +151,14 @@ int BPF_PROG(trace_writepage, struct page *page)
 	return 0;
 }
 
-SEC("fentry/writepages")
-int BPF_PROG(trace_writepages, struct address_space *mapping)
+SEC("kprobe/writepages")
+int BPF_KPROBE(trace_writepages, struct address_space *mapping)
 {
 	return 0;
 }
 
-SEC("fentry/__delete_from_page_cache")
-int BPF_PROG(trace_delete_from_page_cache, struct page *page)
+SEC("kprobe/__delete_from_page_cache")
+int BPF_KPROBE(trace_delete_from_page_cache, struct page *page)
 {
 	struct page_key key = {};
 	u64 page_addr = (u64)page;
@@ -175,8 +176,8 @@ int BPF_PROG(trace_delete_from_page_cache, struct page *page)
 	return 0;
 }
 
-SEC("fentry/invalidate_inode_page")
-int BPF_PROG(trace_invalidate_inode_page, struct page *page)
+SEC("kprobe/invalidate_inode_page")
+int BPF_KPROBE(trace_invalidate_inode_page, struct page *page)
 {
 	u32 key = 0;
 	struct page_cache_stats *stats;
@@ -188,8 +189,8 @@ int BPF_PROG(trace_invalidate_inode_page, struct page *page)
 	return 0;
 }
 
-SEC("fexit/writepage")
-int BPF_PROG(trace_writepage_exit, struct page *page, int ret)
+SEC("kretprobe/writepage")
+int BPF_KRETPROBE(trace_writepage_ret, int ret)
 {
 	if (ret != 0) {
 		u32 key = 0;

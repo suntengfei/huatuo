@@ -23,6 +23,7 @@ struct io_chain_entry {
 	u32 dev;
 	u8 stage;
 	u8 completed;
+	char comm[COMPAT_TASK_COMM_LEN];
 };
 
 struct io_chain_stats {
@@ -136,9 +137,8 @@ int trace_sys_exit_write(struct trace_event_raw_sys_exit *ctx)
 }
 
 SEC("tracepoint/block/block_rq_issue")
-int trace_block_rq_issue(struct trace_event_raw_block_rq_issue *ctx)
+int trace_block_rq_issue(struct trace_event_raw_block_rq *ctx)
 {
-	struct request *req = (struct request *)ctx->rq;
 	struct io_chain_key key = {};
 	struct io_chain_entry *entry;
 	u64 ts = bpf_ktime_get_ns();
@@ -164,6 +164,7 @@ int trace_block_rq_complete(struct trace_event_raw_block_rq_complete *ctx)
 	u64 ts = bpf_ktime_get_ns();
 	u64 latency_ns;
 	u32 pid = bpf_get_current_pid_tgid() >> 32;
+	u64 bytes;
 
 	key.id = generate_request_id(pid, ts - IO_CHAIN_TIMEOUT_NS);
 
@@ -177,7 +178,8 @@ int trace_block_rq_complete(struct trace_event_raw_block_rq_complete *ctx)
 		latency_ns = ts - entry->start_ts;
 		update_stats(1, latency_ns);
 
-		if (entry->size != ctx->bytes) {
+		bytes = (u64)ctx->nr_sector * 512;
+		if (entry->size != bytes) {
 			u32 key_stats = 0;
 			struct io_chain_stats *stats;
 			stats = bpf_map_lookup_elem(&io_stats_map, &key_stats);
@@ -192,7 +194,7 @@ int trace_block_rq_complete(struct trace_event_raw_block_rq_complete *ctx)
 }
 
 SEC("tracepoint/block/block_rq_insert")
-int trace_block_rq_insert(struct trace_event_raw_block_rq_insert *ctx)
+int trace_block_rq_insert(struct trace_event_raw_block_rq *ctx)
 {
 	return 0;
 }
