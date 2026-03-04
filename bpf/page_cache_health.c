@@ -151,12 +151,6 @@ int BPF_KPROBE(trace_writepage, struct page *page)
 	return 0;
 }
 
-SEC("kprobe/writepages")
-int BPF_KPROBE(trace_writepages, struct address_space *mapping)
-{
-	return 0;
-}
-
 SEC("kprobe/__delete_from_page_cache")
 int BPF_KPROBE(trace_delete_from_page_cache, struct page *page)
 {
