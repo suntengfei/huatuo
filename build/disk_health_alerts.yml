@@ -1,0 +1,156 @@
+groups:
+  - name: disk_health
+    rules:
+      # M1: IO 链路完整性告警
+      - alert: IOChainIntegrityDegraded
+        expr: |
+          avg by (instance) (huatuo_io_chain_complete_rate) < 0.999
+        for: 1m
+        labels:
+          severity: critical
+          category: disk_health
+        annotations:
+          summary: "IO 链路完整性下降"
+          description: "聚合 IO 完成率 {{ $value | humanizePercentage }}，低于阈值 99.9%，可能存在静默写入丢失"
+          runbook_url: "https://huatuo.tech/runbook/io-chain-integrity"
+
+      - alert: IOChainOrphanDetected
+        expr: |
+          sum by (instance) (rate(huatuo_io_chain_orphan_count[5m])) > 0
+        for: 30s
+        labels:
+          severity: warning
+          category: disk_health
+        annotations:
+          summary: "检测到孤儿 IO 请求"
+          description: "检测到孤儿 IO 请求，速率: {{ $value }}/s，请检查存储系统"
+          runbook_url: "https://huatuo.tech/runbook/io-chain-orphan"
+
+      - alert: IOChainLatencyHigh
+        expr: |
+          avg by (instance) (huatuo_io_chain_latency_max_ms) > 100
+        for: 2m
+        labels:
+          severity: warning
+          category: disk_health
+        annotations:
+          summary: "IO 链路延迟过高"
+          description: "IO 链路最大延迟 {{ $value }}ms，超过阈值 100ms"
+          runbook_url: "https://huatuo.tech/runbook/io-chain-latency"
+
+      - alert: IOChainSizeMismatch
+        expr: |
+          sum by (instance) (rate(huatuo_io_chain_size_mismatch[5m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+          category: disk_health
+        annotations:
+          summary: "IO 大小不匹配检测"
+          description: "检测到 IO 请求大小与完成大小不匹配，可能影响数据完整性"
+          runbook_url: "https://huatuo.tech/runbook/io-chain-mismatch"
+
+      # M3: Page Cache 健康告警
+      - alert: PageCacheDirtyOverflow
+        expr: |
+          sum by (instance) (huatuo_page_cache_dirty_writeback_gap) > 10000
+        for: 2m
+        labels:
+          severity: warning
+          category: disk_health
+        annotations:
+          summary: "脏页回写积压"
+          description: "聚合脏页积压 {{ $value }} 页，可能影响系统性能和数据持久性"
+          runbook_url: "https://huatuo.tech/runbook/page-cache-dirty"
+
+      - alert: PageCacheDirtyAgeHigh
+        expr: |
+          avg by (instance) (huatuo_page_cache_dirty_age_max_sec) > 30
+        for: 2m
+        labels:
+          severity: warning
+          category: disk_health
+        annotations:
+          summary: "脏页年龄过高"
+          description: "脏页最大年龄 {{ $value }}s，超过阈值 30s，存在数据丢失风险"
+          runbook_url: "https://huatuo.tech/runbook/page-cache-age"
+
+      - alert: PageCacheInvalidateSpike
+        expr: |
+          sum by (instance) (rate(huatuo_page_cache_invalidate_count[1m])) > 100
+        for: 30s
+        labels:
+          severity: warning
+          category: disk_health
+        annotations:
+          summary: "页失效速率异常"
+          description: "页失效速率 {{ $value }}/s，可能存在内存压力或文件系统问题"
+          runbook_url: "https://huatuo.tech/runbook/page-cache-invalidate"
+
+      - alert: PageCacheWritebackFail
+        expr: |
+          sum by (instance) (rate(huatuo_page_cache_writeback_fail[5m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+          category: disk_health
+        annotations:
+          summary: "页面回写失败"
+          description: "检测到页面回写失败，可能影响数据完整性"
+          runbook_url: "https://huatuo.tech/runbook/page-cache-writeback"
+
+      # M4: 进程 IO 模式告警
+      - alert: PostgresPartialWrite
+        expr: |
+          sum by (instance) (rate(huatuo_proc_io_partial_write_count[5m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+          category: disk_health
+        annotations:
+          summary: "PostgreSQL 部分写入检测"
+          description: "检测到 PostgreSQL 进程部分写入事件，可能影响数据完整性"
+          runbook_url: "https://huatuo.tech/runbook/proc-io-partial"
+
+      - alert: PostgresFsyncSlow
+        expr: |
+          avg by (instance) (huatuo_proc_io_fsync_latency_p99_ms) > 100
+        for: 2m
+        labels:
+          severity: warning
+          category: disk_health
+        annotations:
+          summary: "PostgreSQL fsync 延迟过高"
+          description: "fsync P99 延迟 {{ $value }}ms，超过阈值 100ms，可能影响数据库性能"
+          runbook_url: "https://huatuo.tech/runbook/proc-io-fsync"
+
+      - alert: PostgresFsyncRetry
+        expr: |
+          sum by (instance) (rate(huatuo_proc_io_fsync_retry_count[5m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+          category: disk_health
+        annotations:
+          summary: "PostgreSQL fsync 重试检测"
+          description: "检测到 PostgreSQL fsync 重试事件，可能存在存储问题"
+          runbook_url: "https://huatuo.tech/runbook/proc-io-retry"
+
+      # 综合告警：多层异常
+      - alert: DiskHealthCritical
+        expr: |
+          (
+            avg by (instance) (huatuo_io_chain_complete_rate) < 0.99
+          ) or (
+            sum by (instance) (rate(huatuo_proc_io_partial_write_count[5m])) > 0
+            and
+            sum by (instance) (rate(huatuo_page_cache_writeback_fail[5m])) > 0
+          )
+        for: 30s
+        labels:
+          severity: critical
+          category: disk_health
+        annotations:
+          summary: "磁盘健康严重异常"
+          description: "检测到多层磁盘健康异常，可能已发生数据损坏，请立即检查数据库完整性"
+          runbook_url: "https://huatuo.tech/runbook/disk-health-critical"

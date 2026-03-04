@@ -38,12 +38,12 @@ type CommonConf struct {
 	// APIServer addr
 	APIServer struct {
 		TCPAddr string `default:":19704"`
-		
+
 		Auth struct {
-			Enable   bool   `default:"false"`
+			Enable   bool `default:"false"`
 			Username string
 			Password string
-		}		
+		}
 	}
 
 	// HuaTuo config
@@ -218,6 +218,32 @@ type CommonConf struct {
 		}
 		MountPointStat struct {
 			IncludedMountPoints string
+		}
+		DiskHealth struct {
+			Enabled bool `default:"false"`
+			Alert   struct {
+				RetentionDays   int    `default:"30"`
+				SilenceDuration string `default:"1h"`
+				Aggregation     bool   `default:"true"`
+			}
+			IOChain struct {
+				Enabled               bool    `default:"true"`
+				CompleteRateThreshold float64 `default:"0.999"`
+				OrphanCountThreshold  int     `default:"10"`
+				LatencyP99ThresholdMs int     `default:"100"`
+			}
+			PageCache struct {
+				Enabled                    bool `default:"true"`
+				DirtyWritebackGapThreshold int  `default:"1000"`
+				DirtyAgeThresholdSec       int  `default:"30"`
+				InvalidateRateThreshold    int  `default:"100"`
+			}
+			ProcIO struct {
+				Enabled               bool     `default:"true"`
+				TargetProcesses       []string `default:"[\"postgres\",\"postmaster\"]"`
+				PartialWriteThreshold int      `default:"5"`
+				FsyncLatencyThreshold int      `default:"100"`
+			}
 		}
 	}
 
