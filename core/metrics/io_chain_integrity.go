@@ -26,6 +26,8 @@ import (
 	"huatuo-bamai/internal/log"
 	"huatuo-bamai/pkg/metric"
 	"huatuo-bamai/pkg/tracing"
+
+	"github.com/tklauser/numcpus"
 )
 
 func init() {
@@ -33,27 +35,35 @@ func init() {
 }
 
 func newIOChainIntegrity() (*tracing.EventTracingAttr, error) {
+	cpuPossible, err := numcpus.GetPossible()
+	if err != nil {
+		return nil, fmt.Errorf("get possible cpus: %w", err)
+	}
+
 	return &tracing.EventTracingAttr{
-		TracingData: &ioChainIntegrity{},
-		Internal:    10,
-		Flag:        tracing.FlagTracing | tracing.FlagMetric,
+		TracingData: &ioChainIntegrity{
+			cpuPossible: cpuPossible,
+		},
+		Internal: 10,
+		Flag:     tracing.FlagTracing | tracing.FlagMetric,
 	}, nil
 }
 
-//go:generate $BPF_COMPILE $BPF_INCLUDE -s $BPF_DIR/io_chain_tracing.c -o $BPF_DIR/io_chain_tracing.o
+//go:generate $BPF_COMPILE $BPF_INCLUDE -s $BPF_DIR/io_chain_integrity.c -o $BPF_DIR/io_chain_integrity.o
 
 type ioChainIntegrity struct {
-	bpf     bpf.BPF
-	running atomic.Bool
+	bpf         bpf.BPF
+	running     atomic.Bool
+	cpuPossible int
 }
 
 type ioChainStats struct {
 	TotalRequests     uint64
 	CompletedRequests uint64
-	OrphanRequests    uint64
 	LatencySum        uint64
 	LatencyMax        uint64
 	SizeMismatch      uint64
+	OrphanCompletes   uint64
 }
 
 func (c *ioChainIntegrity) Update() ([]*metric.Data, error) {
@@ -68,15 +78,28 @@ func (c *ioChainIntegrity) Update() ([]*metric.Data, error) {
 
 	var stats ioChainStats
 	if len(items) > 0 {
+		perCPUStats := make([]ioChainStats, c.cpuPossible)
 		buf := bytes.NewReader(items[0].Value)
-		if err := binary.Read(buf, binary.LittleEndian, &stats); err != nil {
-			return nil, err
+		if err := binary.Read(buf, binary.LittleEndian, &perCPUStats); err != nil {
+			return nil, fmt.Errorf("read per-cpu stats: %w", err)
+		}
+
+		for _, cpuStat := range perCPUStats {
+			stats.TotalRequests += cpuStat.TotalRequests
+			stats.CompletedRequests += cpuStat.CompletedRequests
+			stats.LatencySum += cpuStat.LatencySum
+			if cpuStat.LatencyMax > stats.LatencyMax {
+				stats.LatencyMax = cpuStat.LatencyMax
+			}
+			stats.SizeMismatch += cpuStat.SizeMismatch
+			stats.OrphanCompletes += cpuStat.OrphanCompletes
 		}
 	}
 
-	var completeRate float64
-	if stats.TotalRequests > 0 {
-		completeRate = float64(stats.CompletedRequests) / float64(stats.TotalRequests)
+	var matchRate float64
+	totalCompletes := stats.CompletedRequests + stats.OrphanCompletes
+	if totalCompletes > 0 {
+		matchRate = float64(stats.CompletedRequests) / float64(totalCompletes)
 	}
 
 	var latencyAvg float64
@@ -88,13 +111,13 @@ func (c *ioChainIntegrity) Update() ([]*metric.Data, error) {
 
 	cfg := conf.Get().MetricCollector.DiskHealth
 	if cfg.Enabled && cfg.IOChain.Enabled {
-		if completeRate < cfg.IOChain.CompleteRateThreshold {
-			log.Warnf("IO chain complete rate %.4f below threshold %.4f",
-				completeRate, cfg.IOChain.CompleteRateThreshold)
+		if matchRate < cfg.IOChain.CompleteRateThreshold {
+			log.Warnf("IO chain match rate %.4f below threshold %.4f",
+				matchRate, cfg.IOChain.CompleteRateThreshold)
 		}
-		if stats.OrphanRequests > uint64(cfg.IOChain.OrphanCountThreshold) {
-			log.Warnf("IO chain orphan requests %d above threshold %d",
-				stats.OrphanRequests, cfg.IOChain.OrphanCountThreshold)
+		if stats.OrphanCompletes > uint64(cfg.IOChain.OrphanCountThreshold) {
+			log.Warnf("IO chain orphan completes %d above threshold %d",
+				stats.OrphanCompletes, cfg.IOChain.OrphanCountThreshold)
 		}
 		if latencyMaxMs > float64(cfg.IOChain.LatencyP99ThresholdMs) {
 			log.Warnf("IO chain max latency %.2fms above threshold %dms",
@@ -103,13 +126,14 @@ func (c *ioChainIntegrity) Update() ([]*metric.Data, error) {
 	}
 
 	return []*metric.Data{
-		metric.NewGaugeData("io_chain_complete_rate", completeRate, "IO chain completion rate", nil),
-		metric.NewGaugeData("io_chain_orphan_count", float64(stats.OrphanRequests), "Orphan IO requests count", nil),
+		metric.NewGaugeData("io_chain_match_rate", matchRate, "Rate of IO completes that matched original requests", nil),
 		metric.NewGaugeData("io_chain_latency_avg_ms", latencyAvg, "IO chain average latency in ms", nil),
 		metric.NewGaugeData("io_chain_latency_max_ms", latencyMaxMs, "IO chain max latency in ms", nil),
 		metric.NewGaugeData("io_chain_size_mismatch", float64(stats.SizeMismatch), "IO size mismatch count", nil),
-		metric.NewGaugeData("io_chain_total_requests", float64(stats.TotalRequests), "Total IO requests", nil),
-		metric.NewGaugeData("io_chain_completed_requests", float64(stats.CompletedRequests), "Completed IO requests", nil),
+		metric.NewGaugeData("io_chain_orphan_completes", float64(stats.OrphanCompletes), "IO completes without matching request", nil),
+		metric.NewGaugeData("io_chain_total_requests", float64(stats.TotalRequests), "Total IO requests issued", nil),
+		metric.NewGaugeData("io_chain_completed_requests", float64(stats.CompletedRequests), "IO requests completed with match", nil),
+		metric.NewGaugeData("io_chain_total_completes", float64(totalCompletes), "Total IO completes", nil),
 	}, nil
 }
 
@@ -118,14 +142,13 @@ func (c *ioChainIntegrity) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer obj.Close()
 
 	if err := obj.Attach(); err != nil {
+		obj.Close()
 		return err
 	}
 
 	childCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
 
 	obj.WaitDetachByBreaker(childCtx, cancel)
 
@@ -134,5 +157,6 @@ func (c *ioChainIntegrity) Start(ctx context.Context) error {
 
 	<-childCtx.Done()
 	c.running.Store(false)
+
 	return nil
 }

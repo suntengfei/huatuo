@@ -26,6 +26,8 @@ import (
 	"huatuo-bamai/internal/log"
 	"huatuo-bamai/pkg/metric"
 	"huatuo-bamai/pkg/tracing"
+
+	"github.com/tklauser/numcpus"
 )
 
 func init() {
@@ -33,28 +35,33 @@ func init() {
 }
 
 func newPageCacheHealth() (*tracing.EventTracingAttr, error) {
+	cpuPossible, err := numcpus.GetPossible()
+	if err != nil {
+		return nil, fmt.Errorf("get possible cpus: %w", err)
+	}
+
 	return &tracing.EventTracingAttr{
-		TracingData: &pageCacheHealth{},
-		Internal:    10,
-		Flag:        tracing.FlagTracing | tracing.FlagMetric,
+		TracingData: &pageCacheHealth{
+			cpuPossible: cpuPossible,
+		},
+		Internal: 10,
+		Flag:     tracing.FlagTracing | tracing.FlagMetric,
 	}, nil
 }
 
 //go:generate $BPF_COMPILE $BPF_INCLUDE -s $BPF_DIR/page_cache_health.c -o $BPF_DIR/page_cache_health.o
 
 type pageCacheHealth struct {
-	bpf     bpf.BPF
-	running atomic.Bool
+	bpf         bpf.BPF
+	running     atomic.Bool
+	cpuPossible int
 }
 
 type pageCacheStats struct {
-	DirtyPages      uint64
-	WritebackPages  uint64
-	CleanPages      uint64
-	InvalidateCount uint64
-	DirtyAgeSum     uint64
-	DirtyAgeMax     uint64
-	WritebackFail   uint64
+	DirtyEvents     uint64
+	WritebackEvents uint64
+	PagesDirtied    uint64
+	PagesWritten    uint64
 }
 
 func (c *pageCacheHealth) Update() ([]*metric.Data, error) {
@@ -69,22 +76,24 @@ func (c *pageCacheHealth) Update() ([]*metric.Data, error) {
 
 	var stats pageCacheStats
 	if len(items) > 0 {
+		perCPUStats := make([]pageCacheStats, c.cpuPossible)
 		buf := bytes.NewReader(items[0].Value)
-		if err := binary.Read(buf, binary.LittleEndian, &stats); err != nil {
-			return nil, err
+		if err := binary.Read(buf, binary.LittleEndian, &perCPUStats); err != nil {
+			return nil, fmt.Errorf("read per-cpu stats: %w", err)
+		}
+
+		for _, cpuStat := range perCPUStats {
+			stats.DirtyEvents += cpuStat.DirtyEvents
+			stats.WritebackEvents += cpuStat.WritebackEvents
+			stats.PagesDirtied += cpuStat.PagesDirtied
+			stats.PagesWritten += cpuStat.PagesWritten
 		}
 	}
 
-	dirtyWritebackGap := int64(stats.DirtyPages) - int64(stats.WritebackPages)
+	dirtyWritebackGap := int64(stats.DirtyEvents) - int64(stats.WritebackEvents)
 	if dirtyWritebackGap < 0 {
 		dirtyWritebackGap = 0
 	}
-
-	var dirtyAgeAvg float64
-	if stats.DirtyPages > 0 {
-		dirtyAgeAvg = float64(stats.DirtyAgeSum) / float64(stats.DirtyPages) / 1000000000
-	}
-	dirtyAgeMaxSec := float64(stats.DirtyAgeMax) / 1000000000
 
 	cfg := conf.Get().MetricCollector.DiskHealth
 	if cfg.Enabled && cfg.PageCache.Enabled {
@@ -92,25 +101,14 @@ func (c *pageCacheHealth) Update() ([]*metric.Data, error) {
 			log.Warnf("Page cache dirty-writeback gap %d above threshold %d",
 				dirtyWritebackGap, cfg.PageCache.DirtyWritebackGapThreshold)
 		}
-		if dirtyAgeMaxSec > float64(cfg.PageCache.DirtyAgeThresholdSec) {
-			log.Warnf("Page cache max dirty age %.2fs above threshold %ds",
-				dirtyAgeMaxSec, cfg.PageCache.DirtyAgeThresholdSec)
-		}
-		if stats.InvalidateCount > uint64(cfg.PageCache.InvalidateRateThreshold) {
-			log.Warnf("Page cache invalidate count %d above threshold %d",
-				stats.InvalidateCount, cfg.PageCache.InvalidateRateThreshold)
-		}
 	}
 
 	return []*metric.Data{
-		metric.NewGaugeData("page_cache_dirty_pages", float64(stats.DirtyPages), "Number of dirty pages", nil),
-		metric.NewGaugeData("page_cache_writeback_pages", float64(stats.WritebackPages), "Number of pages in writeback", nil),
-		metric.NewGaugeData("page_cache_dirty_writeback_gap", float64(dirtyWritebackGap), "Gap between dirty and writeback pages", nil),
-		metric.NewGaugeData("page_cache_dirty_age_avg_sec", dirtyAgeAvg, "Average dirty page age in seconds", nil),
-		metric.NewGaugeData("page_cache_dirty_age_max_sec", dirtyAgeMaxSec, "Max dirty page age in seconds", nil),
-		metric.NewGaugeData("page_cache_invalidate_count", float64(stats.InvalidateCount), "Page invalidate count", nil),
-		metric.NewGaugeData("page_cache_writeback_fail", float64(stats.WritebackFail), "Writeback failure count", nil),
-		metric.NewGaugeData("page_cache_clean_pages", float64(stats.CleanPages), "Number of clean pages", nil),
+		metric.NewGaugeData("page_cache_dirty_events", float64(stats.DirtyEvents), "Number of dirty page events", nil),
+		metric.NewGaugeData("page_cache_writeback_events", float64(stats.WritebackEvents), "Number of writeback events", nil),
+		metric.NewGaugeData("page_cache_dirty_writeback_gap", float64(dirtyWritebackGap), "Gap between dirty and writeback events", nil),
+		metric.NewGaugeData("page_cache_pages_dirtied", float64(stats.PagesDirtied), "Total pages dirtied", nil),
+		metric.NewGaugeData("page_cache_pages_written", float64(stats.PagesWritten), "Total pages written", nil),
 	}, nil
 }
 
@@ -119,14 +117,13 @@ func (c *pageCacheHealth) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer obj.Close()
 
 	if err := obj.Attach(); err != nil {
+		obj.Close()
 		return err
 	}
 
 	childCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
 
 	obj.WaitDetachByBreaker(childCtx, cancel)
 
@@ -135,5 +132,6 @@ func (c *pageCacheHealth) Start(ctx context.Context) error {
 
 	<-childCtx.Done()
 	c.running.Store(false)
+
 	return nil
 }

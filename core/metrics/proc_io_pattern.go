@@ -49,19 +49,19 @@ type procIOPattern struct {
 }
 
 type procIOStats struct {
-	WriteBytes        uint64
-	ReadBytes         uint64
-	WriteCount        uint64
-	ReadCount         uint64
-	FsyncCount        uint64
-	FsyncLatencySum   uint64
-	FsyncLatencyMax   uint64
-	PartialWriteCount uint64
-	FsyncRetryCount   uint64
+	WriteBytes      uint64
+	ReadBytes       uint64
+	WriteCount      uint64
+	ReadCount       uint64
+	FsyncCount      uint64
+	FsyncLatencySum uint64
+	FsyncLatencyMax uint64
+	FsyncErrorCount uint64
 }
 
 type procIOKey struct {
-	Pid uint32
+	Pid     uint32
+	Padding uint32
 }
 
 func getProcessComm(pid uint32) string {
@@ -84,8 +84,7 @@ func (c *procIOPattern) Update() ([]*metric.Data, error) {
 	}
 
 	var metrics []*metric.Data
-	var totalPartialWrite uint64
-	var totalFsyncRetry uint64
+	var totalFsyncError uint64
 	var totalFsyncLatencySum uint64
 	var totalFsyncCount uint64
 	var maxFsyncLatency uint64
@@ -125,12 +124,10 @@ func (c *procIOPattern) Update() ([]*metric.Data, error) {
 			metric.NewGaugeData("proc_io_fsync_count", float64(stats.FsyncCount), "Process fsync count", labels),
 			metric.NewGaugeData("proc_io_fsync_latency_avg_ms", fsyncLatencyAvg, "Process fsync average latency in ms", labels),
 			metric.NewGaugeData("proc_io_fsync_latency_max_ms", fsyncLatencyMaxMs, "Process fsync max latency in ms", labels),
-			metric.NewGaugeData("proc_io_partial_write_count", float64(stats.PartialWriteCount), "Process partial write count", labels),
-			metric.NewGaugeData("proc_io_fsync_retry_count", float64(stats.FsyncRetryCount), "Process fsync retry count", labels),
+			metric.NewGaugeData("proc_io_fsync_error_count", float64(stats.FsyncErrorCount), "Process fsync error count", labels),
 		)
 
-		totalPartialWrite += stats.PartialWriteCount
-		totalFsyncRetry += stats.FsyncRetryCount
+		totalFsyncError += stats.FsyncErrorCount
 		totalFsyncLatencySum += stats.FsyncLatencySum
 		totalFsyncCount += stats.FsyncCount
 		if stats.FsyncLatencyMax > maxFsyncLatency {
@@ -138,10 +135,6 @@ func (c *procIOPattern) Update() ([]*metric.Data, error) {
 		}
 
 		if cfg.Enabled && cfg.ProcIO.Enabled {
-			if stats.PartialWriteCount > uint64(cfg.ProcIO.PartialWriteThreshold) {
-				log.Warnf("Process %s (pid=%d) partial write count %d above threshold %d",
-					comm, key.Pid, stats.PartialWriteCount, cfg.ProcIO.PartialWriteThreshold)
-			}
 			if fsyncLatencyMaxMs > float64(cfg.ProcIO.FsyncLatencyThreshold) {
 				log.Warnf("Process %s (pid=%d) fsync max latency %.2fms above threshold %dms",
 					comm, key.Pid, fsyncLatencyMaxMs, cfg.ProcIO.FsyncLatencyThreshold)
@@ -149,15 +142,14 @@ func (c *procIOPattern) Update() ([]*metric.Data, error) {
 		}
 	}
 
-	var fsyncLatencyP99 float64
+	var fsyncLatencyMaxGlobalMs float64
 	if totalFsyncCount > 0 {
-		fsyncLatencyP99 = float64(maxFsyncLatency) / 1000000
+		fsyncLatencyMaxGlobalMs = float64(maxFsyncLatency) / 1000000
 	}
 
 	metrics = append(metrics,
-		metric.NewGaugeData("proc_io_total_partial_write_count", float64(totalPartialWrite), "Total partial write count across all processes", nil),
-		metric.NewGaugeData("proc_io_total_fsync_retry_count", float64(totalFsyncRetry), "Total fsync retry count across all processes", nil),
-		metric.NewGaugeData("proc_io_fsync_latency_p99_ms", fsyncLatencyP99, "P99 fsync latency in ms across all processes", nil),
+		metric.NewGaugeData("proc_io_total_fsync_error_count", float64(totalFsyncError), "Total fsync error count across all processes", nil),
+		metric.NewGaugeData("proc_io_fsync_latency_max_global_ms", fsyncLatencyMaxGlobalMs, "Max fsync latency in ms across all processes", nil),
 	)
 
 	return metrics, nil
@@ -168,14 +160,13 @@ func (c *procIOPattern) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer obj.Close()
 
 	if err := obj.Attach(); err != nil {
+		obj.Close()
 		return err
 	}
 
 	childCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
 
 	obj.WaitDetachByBreaker(childCtx, cancel)
 
@@ -184,5 +175,6 @@ func (c *procIOPattern) Start(ctx context.Context) error {
 
 	<-childCtx.Done()
 	c.running.Store(false)
+
 	return nil
 }
