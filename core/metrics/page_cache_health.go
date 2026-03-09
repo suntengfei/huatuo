@@ -113,6 +113,12 @@ func (c *pageCacheHealth) Update() ([]*metric.Data, error) {
 }
 
 func (c *pageCacheHealth) Start(ctx context.Context) error {
+	cfg := conf.Get().MetricCollector.DiskHealth
+	if !cfg.Enabled || !cfg.PageCache.Enabled {
+		log.Infof("page_cache_health disabled by config")
+		return nil
+	}
+
 	obj, err := bpf.LoadBpf(bpf.ThisBpfOBJ(), nil)
 	if err != nil {
 		return err

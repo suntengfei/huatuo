@@ -156,6 +156,12 @@ func (c *procIOPattern) Update() ([]*metric.Data, error) {
 }
 
 func (c *procIOPattern) Start(ctx context.Context) error {
+	cfg := conf.Get().MetricCollector.DiskHealth
+	if !cfg.Enabled || !cfg.ProcIO.Enabled {
+		log.Infof("proc_io_pattern disabled by config")
+		return nil
+	}
+
 	obj, err := bpf.LoadBpf(bpf.ThisBpfOBJ(), nil)
 	if err != nil {
 		return err

@@ -138,6 +138,12 @@ func (c *ioChainIntegrity) Update() ([]*metric.Data, error) {
 }
 
 func (c *ioChainIntegrity) Start(ctx context.Context) error {
+	cfg := conf.Get().MetricCollector.DiskHealth
+	if !cfg.Enabled || !cfg.IOChain.Enabled {
+		log.Infof("io_chain_integrity disabled by config")
+		return nil
+	}
+
 	obj, err := bpf.LoadBpf(bpf.ThisBpfOBJ(), nil)
 	if err != nil {
 		return err
