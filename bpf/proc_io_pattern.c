@@ -9,6 +9,7 @@
 char __license[] SEC("license") = "Dual MIT/GPL";
 
 #define MAX_ENTRIES 1024
+#define MAX_TARGET_PIDS 256
 
 struct proc_io_key {
 	u32 pid;
@@ -40,6 +41,31 @@ struct {
 	__type(value, u64);
 } fsync_track_map SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, MAX_TARGET_PIDS);
+	__type(key, u32);
+	__type(value, u8);
+} target_pids SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, u8);
+} filter_enabled SEC(".maps");
+
+static __always_inline int should_track_pid(u32 pid)
+{
+	u32 key = 0;
+	u8 *enabled = bpf_map_lookup_elem(&filter_enabled, &key);
+	if (!enabled || *enabled == 0) {
+		return 1;
+	}
+
+	return bpf_map_lookup_elem(&target_pids, &pid) != NULL;
+}
+
 static __always_inline struct proc_io_stats *get_or_create_proc_stats(u32 pid)
 {
 	struct proc_io_key key = { .pid = pid, .padding = 0 };
@@ -61,6 +87,9 @@ int trace_sys_enter_write(struct trace_event_raw_sys_enter *ctx)
 	u64 id = bpf_get_current_pid_tgid();
 	u32 pid = id >> 32;
 
+	if (!should_track_pid(pid))
+		return 0;
+
 	struct proc_io_stats *stats = get_or_create_proc_stats(pid);
 	if (!stats)
 		return 0;
@@ -76,6 +105,9 @@ int trace_sys_exit_write(struct trace_event_raw_sys_exit *ctx)
 	u64 id = bpf_get_current_pid_tgid();
 	u32 pid = id >> 32;
 	ssize_t ret = ctx->ret;
+
+	if (!should_track_pid(pid))
+		return 0;
 
 	struct proc_io_stats *stats = get_or_create_proc_stats(pid);
 	if (!stats)
@@ -94,6 +126,9 @@ int trace_sys_enter_read(struct trace_event_raw_sys_enter *ctx)
 	u64 id = bpf_get_current_pid_tgid();
 	u32 pid = id >> 32;
 
+	if (!should_track_pid(pid))
+		return 0;
+
 	struct proc_io_stats *stats = get_or_create_proc_stats(pid);
 	if (!stats)
 		return 0;
@@ -110,6 +145,9 @@ int trace_sys_exit_read(struct trace_event_raw_sys_exit *ctx)
 	u32 pid = id >> 32;
 	ssize_t ret = ctx->ret;
 
+	if (!should_track_pid(pid))
+		return 0;
+
 	struct proc_io_stats *stats = get_or_create_proc_stats(pid);
 	if (!stats)
 		return 0;
@@ -125,9 +163,13 @@ SEC("tracepoint/syscalls/sys_enter_fsync")
 int trace_sys_enter_fsync(struct trace_event_raw_sys_enter *ctx)
 {
 	u64 id = bpf_get_current_pid_tgid();
+	u32 pid = id >> 32;
 	u64 ts = bpf_ktime_get_ns();
 
-	struct proc_io_stats *stats = get_or_create_proc_stats(id >> 32);
+	if (!should_track_pid(pid))
+		return 0;
+
+	struct proc_io_stats *stats = get_or_create_proc_stats(pid);
 	if (stats)
 		stats->fsync_count++;
 
@@ -140,8 +182,12 @@ SEC("tracepoint/syscalls/sys_exit_fsync")
 int trace_sys_exit_fsync(struct trace_event_raw_sys_exit *ctx)
 {
 	u64 id = bpf_get_current_pid_tgid();
+	u32 pid = id >> 32;
 	u64 ts = bpf_ktime_get_ns();
 	int ret = ctx->ret;
+
+	if (!should_track_pid(pid))
+		return 0;
 
 	u64 *start_ts = bpf_map_lookup_elem(&fsync_track_map, &id);
 	if (!start_ts)
@@ -149,7 +195,7 @@ int trace_sys_exit_fsync(struct trace_event_raw_sys_exit *ctx)
 
 	u64 latency = ts - *start_ts;
 
-	struct proc_io_stats *stats = get_or_create_proc_stats(id >> 32);
+	struct proc_io_stats *stats = get_or_create_proc_stats(pid);
 	if (stats) {
 		stats->fsync_latency_sum += latency;
 		if (latency > stats->fsync_latency_max)
@@ -169,9 +215,13 @@ SEC("tracepoint/syscalls/sys_enter_fdatasync")
 int trace_sys_enter_fdatasync(struct trace_event_raw_sys_enter *ctx)
 {
 	u64 id = bpf_get_current_pid_tgid();
+	u32 pid = id >> 32;
 	u64 ts = bpf_ktime_get_ns();
 
-	struct proc_io_stats *stats = get_or_create_proc_stats(id >> 32);
+	if (!should_track_pid(pid))
+		return 0;
+
+	struct proc_io_stats *stats = get_or_create_proc_stats(pid);
 	if (stats)
 		stats->fsync_count++;
 
@@ -184,8 +234,12 @@ SEC("tracepoint/syscalls/sys_exit_fdatasync")
 int trace_sys_exit_fdatasync(struct trace_event_raw_sys_exit *ctx)
 {
 	u64 id = bpf_get_current_pid_tgid();
+	u32 pid = id >> 32;
 	u64 ts = bpf_ktime_get_ns();
 	int ret = ctx->ret;
+
+	if (!should_track_pid(pid))
+		return 0;
 
 	u64 *start_ts = bpf_map_lookup_elem(&fsync_track_map, &id);
 	if (!start_ts)
@@ -193,7 +247,7 @@ int trace_sys_exit_fdatasync(struct trace_event_raw_sys_exit *ctx)
 
 	u64 latency = ts - *start_ts;
 
-	struct proc_io_stats *stats = get_or_create_proc_stats(id >> 32);
+	struct proc_io_stats *stats = get_or_create_proc_stats(pid);
 	if (stats) {
 		stats->fsync_latency_sum += latency;
 		if (latency > stats->fsync_latency_max)

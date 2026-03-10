@@ -42,7 +42,9 @@ func newIOChainIntegrity() (*tracing.EventTracingAttr, error) {
 
 	return &tracing.EventTracingAttr{
 		TracingData: &ioChainIntegrity{
-			cpuPossible: cpuPossible,
+			cpuPossible:  cpuPossible,
+			perCPUStats:  make([]ioChainStats, cpuPossible),
+			statsBuf:     make([]byte, 0, 1024),
 		},
 		Internal: 10,
 		Flag:     tracing.FlagTracing | tracing.FlagMetric,
@@ -55,6 +57,8 @@ type ioChainIntegrity struct {
 	bpf         bpf.BPF
 	running     atomic.Bool
 	cpuPossible int
+	perCPUStats []ioChainStats
+	statsBuf    []byte
 }
 
 type ioChainStats struct {
@@ -78,13 +82,16 @@ func (c *ioChainIntegrity) Update() ([]*metric.Data, error) {
 
 	var stats ioChainStats
 	if len(items) > 0 {
-		perCPUStats := make([]ioChainStats, c.cpuPossible)
+		for i := range c.perCPUStats {
+			c.perCPUStats[i] = ioChainStats{}
+		}
+
 		buf := bytes.NewReader(items[0].Value)
-		if err := binary.Read(buf, binary.LittleEndian, &perCPUStats); err != nil {
+		if err := binary.Read(buf, binary.LittleEndian, &c.perCPUStats); err != nil {
 			return nil, fmt.Errorf("read per-cpu stats: %w", err)
 		}
 
-		for _, cpuStat := range perCPUStats {
+		for _, cpuStat := range c.perCPUStats {
 			stats.TotalRequests += cpuStat.TotalRequests
 			stats.CompletedRequests += cpuStat.CompletedRequests
 			stats.LatencySum += cpuStat.LatencySum

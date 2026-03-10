@@ -42,7 +42,8 @@ func newPageCacheHealth() (*tracing.EventTracingAttr, error) {
 
 	return &tracing.EventTracingAttr{
 		TracingData: &pageCacheHealth{
-			cpuPossible: cpuPossible,
+			cpuPossible:  cpuPossible,
+			perCPUStats:  make([]pageCacheStats, cpuPossible),
 		},
 		Internal: 10,
 		Flag:     tracing.FlagTracing | tracing.FlagMetric,
@@ -55,6 +56,7 @@ type pageCacheHealth struct {
 	bpf         bpf.BPF
 	running     atomic.Bool
 	cpuPossible int
+	perCPUStats []pageCacheStats
 }
 
 type pageCacheStats struct {
@@ -76,13 +78,16 @@ func (c *pageCacheHealth) Update() ([]*metric.Data, error) {
 
 	var stats pageCacheStats
 	if len(items) > 0 {
-		perCPUStats := make([]pageCacheStats, c.cpuPossible)
+		for i := range c.perCPUStats {
+			c.perCPUStats[i] = pageCacheStats{}
+		}
+
 		buf := bytes.NewReader(items[0].Value)
-		if err := binary.Read(buf, binary.LittleEndian, &perCPUStats); err != nil {
+		if err := binary.Read(buf, binary.LittleEndian, &c.perCPUStats); err != nil {
 			return nil, fmt.Errorf("read per-cpu stats: %w", err)
 		}
 
-		for _, cpuStat := range perCPUStats {
+		for _, cpuStat := range c.perCPUStats {
 			stats.DirtyEvents += cpuStat.DirtyEvents
 			stats.WritebackEvents += cpuStat.WritebackEvents
 			stats.PagesDirtied += cpuStat.PagesDirtied

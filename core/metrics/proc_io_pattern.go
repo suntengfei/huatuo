@@ -20,7 +20,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"huatuo-bamai/internal/bpf"
 	"huatuo-bamai/internal/conf"
@@ -35,17 +37,25 @@ func init() {
 
 func newProcIOPattern() (*tracing.EventTracingAttr, error) {
 	return &tracing.EventTracingAttr{
-		TracingData: &procIOPattern{},
-		Internal:    10,
-		Flag:        tracing.FlagTracing | tracing.FlagMetric,
+		TracingData: &procIOPattern{
+			commCache:      make(map[uint32]string),
+			targetPidCache: make(map[uint32]struct{}),
+		},
+		Internal: 10,
+		Flag:     tracing.FlagTracing | tracing.FlagMetric,
 	}, nil
 }
 
 //go:generate $BPF_COMPILE $BPF_INCLUDE -s $BPF_DIR/proc_io_pattern.c -o $BPF_DIR/proc_io_pattern.o
 
 type procIOPattern struct {
-	bpf     bpf.BPF
-	running atomic.Bool
+	bpf            bpf.BPF
+	running        atomic.Bool
+	commCache      map[uint32]string
+	commCacheMu    sync.RWMutex
+	targetPidCache map[uint32]struct{}
+	targetPidMu    sync.RWMutex
+	lastPidRefresh time.Time
 }
 
 type procIOStats struct {
@@ -64,19 +74,164 @@ type procIOKey struct {
 	Padding uint32
 }
 
-func getProcessComm(pid uint32) string {
+func (c *procIOPattern) getProcessComm(pid uint32) string {
+	c.commCacheMu.RLock()
+	if comm, ok := c.commCache[pid]; ok {
+		c.commCacheMu.RUnlock()
+		return comm
+	}
+	c.commCacheMu.RUnlock()
+
 	commPath := fmt.Sprintf("/proc/%d/comm", pid)
 	data, err := os.ReadFile(commPath)
 	if err != nil {
 		return "unknown"
 	}
-	return string(bytes.TrimSpace(data))
+	comm := string(bytes.TrimSpace(data))
+
+	c.commCacheMu.Lock()
+	c.commCache[pid] = comm
+	c.commCacheMu.Unlock()
+
+	return comm
+}
+
+func (c *procIOPattern) syncTargetPidsToBPF(pids map[uint32]struct{}) error {
+	filterEnabledKey := uint32(0)
+	filterEnabledValue := uint8(0)
+
+	if len(pids) > 0 {
+		filterEnabledValue = 1
+	}
+
+	filterEnabledBuf := new(bytes.Buffer)
+	if err := binary.Write(filterEnabledBuf, binary.LittleEndian, filterEnabledKey); err != nil {
+		return err
+	}
+	valueBuf := new(bytes.Buffer)
+	if err := binary.Write(valueBuf, binary.LittleEndian, filterEnabledValue); err != nil {
+		return err
+	}
+
+	if err := c.bpf.UpdateMapItemByName("filter_enabled", filterEnabledBuf.Bytes(), valueBuf.Bytes()); err != nil {
+		return fmt.Errorf("update filter_enabled: %w", err)
+	}
+
+	if len(pids) == 0 {
+		return nil
+	}
+
+	for pid := range pids {
+		keyBuf := new(bytes.Buffer)
+		if err := binary.Write(keyBuf, binary.LittleEndian, pid); err != nil {
+			continue
+		}
+		valueBuf := new(bytes.Buffer)
+		if err := binary.Write(valueBuf, binary.LittleEndian, uint8(1)); err != nil {
+			continue
+		}
+		c.bpf.UpdateMapItemByName("target_pids", keyBuf.Bytes(), valueBuf.Bytes())
+	}
+
+	return nil
+}
+
+func (c *procIOPattern) refreshTargetPids() {
+	cfg := conf.Get().MetricCollector.DiskHealth
+	if len(cfg.ProcIO.TargetProcesses) == 0 {
+		return
+	}
+
+	if time.Since(c.lastPidRefresh) < 5*time.Second {
+		return
+	}
+	c.lastPidRefresh = time.Now()
+
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return
+	}
+
+	newPids := make(map[uint32]struct{})
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		pidStr := entry.Name()
+		pid := 0
+		for _, ch := range pidStr {
+			if ch >= '0' && ch <= '9' {
+				pid = pid*10 + int(ch-'0')
+			} else {
+				pid = 0
+				break
+			}
+		}
+		if pid == 0 {
+			continue
+		}
+
+		commPath := fmt.Sprintf("/proc/%s/comm", pidStr)
+		data, err := os.ReadFile(commPath)
+		if err != nil {
+			continue
+		}
+		comm := string(bytes.TrimSpace(data))
+
+		for _, target := range cfg.ProcIO.TargetProcesses {
+			if comm == target {
+				newPids[uint32(pid)] = struct{}{}
+				break
+			}
+		}
+	}
+
+	c.targetPidMu.Lock()
+	oldPids := c.targetPidCache
+	c.targetPidCache = newPids
+	c.targetPidMu.Unlock()
+
+	if !mapsEqual(oldPids, newPids) {
+		if err := c.syncTargetPidsToBPF(newPids); err != nil {
+			log.Warnf("Failed to sync target PIDs to BPF: %v", err)
+		} else {
+			log.Debugf("Refreshed target PIDs: %d processes matched", len(newPids))
+		}
+	}
+}
+
+func mapsEqual(a, b map[uint32]struct{}) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k := range a {
+		if _, ok := b[k]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *procIOPattern) isTargetPid(pid uint32) bool {
+	cfg := conf.Get().MetricCollector.DiskHealth
+	if len(cfg.ProcIO.TargetProcesses) == 0 {
+		return true
+	}
+
+	c.targetPidMu.RLock()
+	_, ok := c.targetPidCache[pid]
+	c.targetPidMu.RUnlock()
+	return ok
 }
 
 func (c *procIOPattern) Update() ([]*metric.Data, error) {
 	if !c.running.Load() {
 		return nil, nil
 	}
+
+	c.refreshTargetPids()
 
 	items, err := c.bpf.DumpMapByName("proc_io_map")
 	if err != nil {
@@ -98,13 +253,17 @@ func (c *procIOPattern) Update() ([]*metric.Data, error) {
 			continue
 		}
 
+		if !c.isTargetPid(key.Pid) {
+			continue
+		}
+
 		var stats procIOStats
 		buf = bytes.NewReader(item.Value)
 		if err := binary.Read(buf, binary.LittleEndian, &stats); err != nil {
 			continue
 		}
 
-		comm := getProcessComm(key.Pid)
+		comm := c.getProcessComm(key.Pid)
 		labels := map[string]string{
 			"pid":  fmt.Sprintf("%d", key.Pid),
 			"comm": comm,
@@ -178,6 +337,10 @@ func (c *procIOPattern) Start(ctx context.Context) error {
 
 	c.bpf = obj
 	c.running.Store(true)
+
+	if len(cfg.ProcIO.TargetProcesses) > 0 {
+		c.refreshTargetPids()
+	}
 
 	<-childCtx.Done()
 	c.running.Store(false)
