@@ -113,7 +113,19 @@ func (c *procIOPattern) syncTargetPidsToBPF(pids map[uint32]struct{}) error {
 		return err
 	}
 
-	if err := c.bpf.UpdateMapItemByName("filter_enabled", filterEnabledBuf.Bytes(), valueBuf.Bytes()); err != nil {
+	filterEnabledMapID := c.bpf.MapIDByName("filter_enabled")
+	if filterEnabledMapID == 0 {
+		return fmt.Errorf("filter_enabled map not found")
+	}
+
+	items := []bpf.MapItem{
+		{
+			Key:   filterEnabledBuf.Bytes(),
+			Value: valueBuf.Bytes(),
+		},
+	}
+
+	if err := c.bpf.WriteMapItems(filterEnabledMapID, items); err != nil {
 		return fmt.Errorf("update filter_enabled: %w", err)
 	}
 
@@ -121,6 +133,12 @@ func (c *procIOPattern) syncTargetPidsToBPF(pids map[uint32]struct{}) error {
 		return nil
 	}
 
+	targetPidsMapID := c.bpf.MapIDByName("target_pids")
+	if targetPidsMapID == 0 {
+		return fmt.Errorf("target_pids map not found")
+	}
+
+	targetItems := make([]bpf.MapItem, 0, len(pids))
 	for pid := range pids {
 		keyBuf := new(bytes.Buffer)
 		if err := binary.Write(keyBuf, binary.LittleEndian, pid); err != nil {
@@ -130,7 +148,16 @@ func (c *procIOPattern) syncTargetPidsToBPF(pids map[uint32]struct{}) error {
 		if err := binary.Write(valueBuf, binary.LittleEndian, uint8(1)); err != nil {
 			continue
 		}
-		c.bpf.UpdateMapItemByName("target_pids", keyBuf.Bytes(), valueBuf.Bytes())
+		targetItems = append(targetItems, bpf.MapItem{
+			Key:   keyBuf.Bytes(),
+			Value: valueBuf.Bytes(),
+		})
+	}
+
+	if len(targetItems) > 0 {
+		if err := c.bpf.WriteMapItems(targetPidsMapID, targetItems); err != nil {
+			return fmt.Errorf("update target_pids: %w", err)
+		}
 	}
 
 	return nil
